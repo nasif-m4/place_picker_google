@@ -961,6 +961,9 @@ class PlacePickerState extends State<PlacePicker>
     /// Reverse Geocode Lat Lng
     await _reverseGeocodeLatLng(latLng, autoCompleteResult: autoCompleteResult);
 
+    // TODO: Set w3w words
+    // if (widget.w3wEnabled) await _getW3WCoordinates();
+
     if (widget.enableNearbyPlaces) await _getNearbyPlaces(latLng);
 
     _isAnimating = false;

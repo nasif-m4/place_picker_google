@@ -79,6 +79,11 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
       MaterialPageRoute(
         builder: (context) {
           return PlacePicker(
+            googleAPIParameters: const GoogleAPIParameters(
+              fields: ['geometry/location'],
+              language: 'en',
+              region: 'uk'
+            ),
             useFreeGeocoding: _useFreeGeocoding,
             mapsBaseUrl: kIsWeb
                 ? 'https://cors-anywhere.herokuapp.com/https://maps.googleapis.com/maps/api/'

@@ -419,7 +419,7 @@ class PlacePickerState extends State<PlacePicker>
   /// The selected nearby place if enabled.
   NearbyPlace? selectedNearbyPlace;
 
-  String? _w3wWords;
+  // String? _w3wWords;
 
   @override
   void setState(fn) {
@@ -431,7 +431,7 @@ class PlacePickerState extends State<PlacePicker>
   @override
   void initState() {
     _focusNode = widget.searchInputConfig.focusNode ?? FocusNode();
-    _w3wWords = widget.searchInputConfig.w3wWords;
+    previousSearchTerm = widget.searchInputConfig.w3wWords??'';
     _initializePositionAndMarkers();
     super.initState();
   }
@@ -491,7 +491,7 @@ class PlacePickerState extends State<PlacePicker>
     if (!currentFocus.hasPrimaryFocus && currentFocus.focusedChild != null) {
       FocusManager.instance.primaryFocus?.unfocus();
     }
-    _searchController.clear();
+    // _searchController.clear();
     _hideOverlay();
   }
 
@@ -708,8 +708,19 @@ class PlacePickerState extends State<PlacePicker>
     _zoom = position.zoom;
   }
 
+  Future<void> _setW3WAddress(LatLng latLng) async {
+    final Location? location;
+    if (w3wService != null) {
+      location = await _getW3WCoordinates(latLng);
+      if (location != null) {
+        previousSearchTerm = location.words;
+        _searchController.text = '///$previousSearchTerm';
+      }
+    }
+  }
+
   /// On user taps map
-  onTap(LatLng position) {
+  Future<void> onTap(LatLng position) async {
     if (!widget.usePinPointingSearch) {
       setState(() {
         _searchingState = SearchingState.searching;
@@ -717,11 +728,17 @@ class PlacePickerState extends State<PlacePicker>
     }
 
     _clearOverlay();
+    if (w3wService != null) {
+      // final RenderBox? searchInputBox = searchInputKey.currentContext?.findRenderObject() as RenderBox?;
+      // _createSuggestionsOverlay(searchInputBox);
+      // Show loader in search bar
+      await _setW3WAddress(position);
+    }
 
-    /// remove selected nearby place
+    // remove selected nearby place
     selectedNearbyPlace = null;
     animateToLocation(position);
-    _searchController.clear();
+    // _searchController.clear(); // TODO
   }
 
   /// Debounce function for pin-pointing search
@@ -827,19 +844,17 @@ class PlacePickerState extends State<PlacePicker>
 
     if (place.isEmpty) return;
 
-    final RenderBox? searchInputBox =
-        searchInputKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? searchInputBox = searchInputKey.currentContext?.findRenderObject() as RenderBox?;
 
     _suggestionsOverlayEntry = _createSuggestionsOverlay(searchInputBox);
 
     /// Insert the finding places in suggestions overlay entry
     Overlay.of(context).insert(_suggestionsOverlayEntry!);
 
-    final isPossible3wa = w3wService?.isPossible3wa(place);
-    if (isPossible3wa == true) {
-      autoCompleteSearchW3W(place);
-    } else {
+    if (w3wService == null) {
       autoCompleteSearch(place);
+    } else if (w3wService?.isPossible3wa(place) == true) {
+      autoCompleteSearchW3W(place);
     }
   }
 
@@ -901,7 +916,9 @@ class PlacePickerState extends State<PlacePicker>
         ..id = (i++).toString()
         ..text = t.words
         ..mainText = t.nearestPlace
-        ..secondaryText = t.country;
+        ..secondaryText = t.country
+        ..offset = 0
+        ..length = t.words.length;
 
       return RichSuggestion(
         autoCompleteItem: aci,
@@ -1014,19 +1031,8 @@ class PlacePickerState extends State<PlacePicker>
     /// Set Marker
     if (!widget.usePinPointingSearch) setMarker(latLng);
 
-    final Location? w3wAddress;
-    if (w3wService != null && _w3wWords == null) {
-      w3wAddress = await _getW3WCoordinates(latLng);
-      if (w3wAddress != null) {
-        _w3wWords = w3wAddress.words;
-        _searchController.text = '///$_w3wWords';
-      }
-    } else {
-      w3wAddress = null;
-    }
-
     /// Reverse Geocode Lat Lng
-    await _reverseGeocodeLatLng(latLng, autoCompleteResult: autoCompleteResult, location: w3wAddress);
+    await _reverseGeocodeLatLng(latLng, autoCompleteResult: autoCompleteResult, location: null);
 
     if (widget.enableNearbyPlaces) await _getNearbyPlaces(latLng);
 
@@ -1517,7 +1523,7 @@ class PlacePickerState extends State<PlacePicker>
   Future<void> getDetailsAndSelectPlaceW3W(AutoCompleteItem autoCompleteResult) async {
     _clearOverlay();
 
-    _w3wWords = autoCompleteResult.text;
+    // _w3wWords = autoCompleteResult.text;
 
     try {
       final response = await w3wService!.convertToCoordinates(autoCompleteResult.text!).execute();
@@ -1537,7 +1543,8 @@ class PlacePickerState extends State<PlacePicker>
         selectedNearbyPlace = null;
         await animateToLocation(LatLng(location.coordinates.lat, location.coordinates.lng),
             autoCompleteResult: autoCompleteResult);
-        _searchController.clear();
+
+        // _searchController.clear(); // TODO: review
       }
     } catch (e) {
       widget._logError(e.toString());
@@ -1575,7 +1582,7 @@ class PlacePickerState extends State<PlacePicker>
         selectedNearbyPlace = null;
         await animateToLocation(LatLng(location['lat'], location['lng']),
             autoCompleteResult: autoCompleteResult);
-        _searchController.clear();
+        // _searchController.clear();
       }
     } catch (e) {
       widget._logError(e.toString());
@@ -1770,15 +1777,19 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   Future<Location?> _getW3WCoordinates(LatLng latlang) async {
-    final response = await w3wService!.convertTo3wa(Coordinates(latlang.latitude, latlang.longitude))
-        .language(widget.googleAPIParameters.language)
-        .execute();
+    final response = await w3wService!.convertTo3wa(Coordinates(
+      double.parse(latlang.latitude.toStringAsFixed(6)),
+      double.parse(latlang.longitude.toStringAsFixed(6))
+    ))
+    .language(widget.googleAPIParameters.language)
+    .execute();
 
     if (response.isSuccessful()) {
       return response.data();
     }
 
     widget._logError('Failed to get w3w words. ${_getW3WError(response.error())}');
+    return null;
   }
 
   String _getW3WError(What3WordsError? error) {

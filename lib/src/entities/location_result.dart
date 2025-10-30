@@ -1,6 +1,5 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:place_picker_google/place_picker_google.dart';
-import 'package:what3words/what3words.dart';
 
 /// The result returned after completing location selection.
 class LocationResult {
@@ -70,7 +69,7 @@ class LocationResult {
 
   AddressComponent? subLocalityLevel5;
 
-  Location? location;
+  String? w3wWords;
 
   List<AddressComponent>? political;
 
@@ -98,7 +97,7 @@ class LocationResult {
     this.subLocalityLevel3,
     this.subLocalityLevel4,
     this.subLocalityLevel5,
-    this.location,
+    this.w3wWords,
     this.political,
   });
 

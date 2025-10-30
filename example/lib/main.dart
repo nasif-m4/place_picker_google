@@ -1,8 +1,11 @@
+import 'dart:ui';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:place_picker_google/place_picker_google.dart';
+import 'package:what3words/what3words.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -75,25 +78,34 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
   }
 
   void showPlacePicker() {
+    final w3wAutoSuggestOptions = AutosuggestOptions()
+      ..setLanguage('en')
+      ..setNResults(3);
+    final localCountryCode = PlatformDispatcher.instance.locale.countryCode;
+    if (localCountryCode != null) {
+      w3wAutoSuggestOptions.setClipToCountry([localCountryCode]);
+    }
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) {
           return PlacePicker(
-            googleAPIParameters: const GoogleAPIParameters(
+            w3wAutoSuggestOptions: w3wAutoSuggestOptions,
+            googleAPIParameters: GoogleAPIParameters(
               fields: ['geometry/location'],
               language: 'en',
-              region: 'bd'
+              region: localCountryCode?.toLowerCase(),
             ),
             useFreeGeocoding: _useFreeGeocoding,
             mapsBaseUrl: kIsWeb
                 ? 'https://cors-anywhere.herokuapp.com/https://maps.googleapis.com/maps/api/'
                 : "https://maps.googleapis.com/maps/api/",
-            usePinPointingSearch: true,
+            usePinPointingSearch: false,
             apiKey: dotenv.env['GOOGLE_MAPS_API_KEY']!,
             w3wApiKey: dotenv.env['W3W_API_KEY'],
             onPlacePicked: (LocationResult result) {
               debugPrint("Place picked: ${result.formattedAddress}");
-              debugPrint("W3W address: ${result.location?.words}");
+              debugPrint("W3W address: ${result.w3wWords}");
               Navigator.of(context).pop();
             },
             enableNearbyPlaces: false,
@@ -115,8 +127,19 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
               autofocus: false,
               textDirection: TextDirection.ltr,
             ),
-            searchInputDecorationConfig: const SearchInputDecorationConfig(
-              hintText: "Search for a building, street or ...",
+            searchInputDecorationConfig: SearchInputDecorationConfig(
+              hintText: "Find your address",
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(50.0),
+                borderSide: BorderSide.none, // Hide the default border
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 20.0,
+                vertical: 15.0,
+              )
+            ),
+            selectedPlaceConfig: const SelectedPlaceConfig.init(
+              actionButtonText: 'Select place',
             ),
             // selectedPlaceWidgetBuilder: (ctx, state, result) {
             //   return const SizedBox.shrink();

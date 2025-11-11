@@ -449,9 +449,13 @@ class PlacePickerState extends State<PlacePicker>
 
   void _initializePositionAndMarkers() async {
     try {
-      final LatLng position = widget.initialLocation ?? await _getCurrentLocation();
-
-      _setW3WAddress(position);
+      late final LatLng position;
+      if (widget.initialLocation == null) {
+        position = widget.initialLocation!;
+        _setW3WAddress(position);
+      } else {
+        position = await _getCurrentLocation();
+      }
 
       if (mounted) {
         setState(() {
@@ -601,6 +605,7 @@ class PlacePickerState extends State<PlacePicker>
     return SafeArea(
       child: Row(
         children: [
+          const SizedBox(width: 8),
           if (widget.backWidgetBuilder != null)
             Builder(
               builder: (ctx) => widget.backWidgetBuilder!(ctx),
@@ -759,7 +764,7 @@ class PlacePickerState extends State<PlacePicker>
   Widget _buildMyLocationButton() {
     return Positioned(
       top: widget.myLocationFABConfig.top,
-      bottom: widget.myLocationFABConfig.bottom ?? 8.0,
+      bottom: widget.myLocationFABConfig.bottom ?? 12,
       right: widget.myLocationFABConfig.right ?? (widget.zoomControlsEnabled == true ? 60 : 8),
       left: widget.myLocationFABConfig.left,
       child: FloatingActionButton.small(

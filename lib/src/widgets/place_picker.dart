@@ -450,7 +450,7 @@ class PlacePickerState extends State<PlacePicker>
   void _initializePositionAndMarkers() async {
     try {
       late final LatLng position;
-      if (widget.initialLocation == null) {
+      if (widget.initialLocation != null) {
         position = widget.initialLocation!;
         _setW3WAddress(position);
       } else {
@@ -725,9 +725,32 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   Future<void> _setW3WWords(String w3wWords) async {
-    _w3wWords = w3wWords;
-    previousSearchTerm = '///$w3wWords';
+    _w3wWords = '///$w3wWords';
+    previousSearchTerm = _w3wWords!;
     _searchController.text = previousSearchTerm;
+  }
+
+  Future<void> setW3WAddress(String words) async {
+    if (w3wService == null) {
+      return;
+    }
+
+    final w3w = words.replaceAll('///', '');
+    final rs = await w3wService!.convertToCoordinates(w3w).execute();
+    if (rs.isSuccessful()) {
+      final coordinates = rs.data()?.coordinates;
+      if (coordinates == null) {
+        return;
+      }
+
+      selectedNearbyPlace = null;
+      await _setW3WWords(w3w);
+      final location = LatLng(coordinates.lat, coordinates.lng);
+      setState(() {
+        _currentLocation = location;
+      });
+      animateToLocation(location);
+    }
   }
 
   /// On user taps map

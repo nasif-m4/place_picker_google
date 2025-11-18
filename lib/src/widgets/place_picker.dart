@@ -5,16 +5,17 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-
+import 'package:geocoding/geocoding.dart' as geocoding;
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:geocoding/geocoding.dart' as geocoding;
-
 import 'package:place_picker_google/place_picker_google.dart';
 import 'package:place_picker_google/src/entities/google/index.dart';
 import 'package:place_picker_google/src/services/index.dart';
 import 'package:place_picker_google/src/utils/index.dart';
+import 'package:what3words/what3words.dart';
+
+typedef Consumer<T> = void Function(T arg);
 
 typedef SelectedPlaceWidgetBuilder = Widget Function(
   BuildContext context,
@@ -43,6 +44,8 @@ class PlacePicker extends StatefulWidget {
   /// API key generated from Google Cloud Console. You can get an API key
   /// [here](https://cloud.google.com/maps-platform/)
   final String apiKey;
+
+  final String? w3wApiKey;
 
   /// Maps base url
   final String? mapsBaseUrl;
@@ -135,6 +138,9 @@ class PlacePicker extends StatefulWidget {
   /// See also:
   ///   * [myLocationEnabled] parameter.
   final bool myLocationButtonEnabled;
+
+  // The defaul my location button is shown in top right and is not convenient to use, so we create a custom my location button
+  final bool myLocationButtonFlutterEnabled;
 
   /// Config of my location FAB
   final MyLocationFABConfig myLocationFABConfig;
@@ -248,13 +254,18 @@ class PlacePicker extends StatefulWidget {
   /// including language, region, bounds, and whether to use free local geocoding.
   final GoogleAPIParameters googleAPIParameters;
 
+  final AutosuggestOptions? w3wAutoSuggestOptions;
+
   /// Use free place-marks service from geocoding package to get address from coordinates,
   /// instead of the priced one provided by Google.
   final bool useFreeGeocoding;
 
+  final Consumer? logError;
+
   const PlacePicker({
     super.key,
     required this.apiKey,
+    this.w3wApiKey,
     this.mapsBaseUrl = 'https://maps.googleapis.com/maps/api/',
     this.mapsApiHeaders,
     this.mapsHttpClient,
@@ -262,12 +273,10 @@ class PlacePicker extends StatefulWidget {
     this.initialLocation,
     this.onPlacePicked,
     this.mapType = MapType.normal,
-    this.minMaxZoomPreference = const MinMaxZoomPreference(0, 16.0),
+    this.minMaxZoomPreference = const MinMaxZoomPreference(0, 25.0),
     this.localizationConfig = const LocalizationConfig.init(),
-    this.showSearchInput = true,
     this.searchInputConfig = const SearchInputConfig(),
     this.searchInputDecorationConfig = const SearchInputDecorationConfig(),
-    this.enableNearbyPlaces = true,
     this.nearbyPlaceItemStyle,
     this.nearbyPlaceStyle,
     this.selectedLocationNameStyle,
@@ -277,25 +286,29 @@ class PlacePicker extends StatefulWidget {
     this.selectedPlaceConfig = const SelectedPlaceConfig.init(),
     this.myLocationFABConfig = const MyLocationFABConfig(),
     this.autoCompleteOverlayElevation = 0,
-    this.usePinPointingSearch = false,
     this.pinPointingDebounceDuration = 500,
     this.pinPointingPinWidgetBuilder,
     this.autocompletePlacesSearchRadius,
-    this.rotateGesturesEnabled = true,
+    this.showSearchInput = true,
+    this.enableNearbyPlaces = true,
     this.scrollGesturesEnabled = true,
     this.zoomControlsEnabled = true,
     this.zoomGesturesEnabled = true,
     this.tapGesturesEnabled = true,
+    this.tiltGesturesEnabled = false,
+    this.buildingsEnabled = true,
+    this.compassEnabled = false,
+    this.mapToolbarEnabled = false,
+    this.rotateGesturesEnabled = false,
     this.liteModeEnabled = false,
-    this.tiltGesturesEnabled = true,
     this.fortyFiveDegreeImageryEnabled = false,
     this.myLocationEnabled = false,
     this.myLocationButtonEnabled = false,
-    this.compassEnabled = true,
-    this.mapToolbarEnabled = true,
-    this.buildingsEnabled = true,
+    this.myLocationButtonFlutterEnabled = true,
     this.indoorViewEnabled = false,
+    this.usePinPointingSearch = false,
     this.trafficEnabled = false,
+    this.useFreeGeocoding = false,
     this.cloudMapId,
     this.onLongPress,
     this.polygons = const <Polygon>{},
@@ -306,9 +319,18 @@ class PlacePicker extends StatefulWidget {
     this.webGestureHandling,
     this.cameraTargetBounds = CameraTargetBounds.unbounded,
     this.googleAPIParameters = const GoogleAPIParameters(),
+    this.w3wAutoSuggestOptions,
     this.backWidgetBuilder,
-    this.useFreeGeocoding = false,
+    this.logError
   });
+
+  void _logError(String ob) {
+    if (logError != null) {
+      logError!(ob);
+    } else {
+      debugPrint(ob);
+    }
+  }
 
   @override
   State<StatefulWidget> createState() => PlacePickerState();
@@ -335,6 +357,8 @@ class PlacePickerState extends State<PlacePicker>
     httpClient: widget.mapsHttpClient,
     apiHeaders: widget.mapsApiHeaders,
   );
+
+  late final w3wService = widget.w3wApiKey != null ? What3WordsV3(widget.w3wApiKey!) : null;
 
   /// Focus node to help with keyboard dismissal
   late final FocusNode? _focusNode;
@@ -371,6 +395,7 @@ class PlacePickerState extends State<PlacePicker>
   GlobalKey searchInputKey = GlobalKey(debugLabel: "__search_input_box__");
 
   String previousSearchTerm = '';
+  String? _w3wWords;
 
   /// Unique link used for composited target and follower
   final _layerLink = LayerLink();
@@ -412,6 +437,7 @@ class PlacePickerState extends State<PlacePicker>
   @override
   void initState() {
     _focusNode = widget.searchInputConfig.focusNode ?? FocusNode();
+    previousSearchTerm = '///${widget.searchInputConfig.w3wWords??""}';
     _initializePositionAndMarkers();
     super.initState();
   }
@@ -425,8 +451,15 @@ class PlacePickerState extends State<PlacePicker>
 
   void _initializePositionAndMarkers() async {
     try {
-      final LatLng position =
-          widget.initialLocation ?? await _getCurrentLocation();
+      late final LatLng position;
+      if (widget.initialLocation != null) {
+        position = widget.initialLocation!;
+        if (w3wService != null) {
+          _setW3WAddress(position);
+        }
+      } else {
+        position = await _getCurrentLocation();
+      }
 
       if (mounted) {
         setState(() {
@@ -452,7 +485,7 @@ class PlacePickerState extends State<PlacePicker>
           _canLoadMap = true;
         });
       }
-      debugPrint(e.toString());
+      widget._logError(e.toString());
     }
   }
 
@@ -471,7 +504,7 @@ class PlacePickerState extends State<PlacePicker>
     if (!currentFocus.hasPrimaryFocus && currentFocus.focusedChild != null) {
       FocusManager.instance.primaryFocus?.unfocus();
     }
-    _searchController.clear();
+    // _searchController.clear();
     _hideOverlay();
   }
 
@@ -484,8 +517,7 @@ class PlacePickerState extends State<PlacePicker>
         child: Column(
           children: <Widget>[
             Expanded(
-              child:
-                  _canLoadMap ? _buildMapContent() : _buildLoadingIndicator(),
+              child: _canLoadMap ? _buildMapContent() : _buildLoadingIndicator(),
             ),
             _buildSelectedPlace(),
             if (widget.enableNearbyPlaces) _buildNearbyPlaces(),
@@ -500,7 +532,7 @@ class PlacePickerState extends State<PlacePicker>
       children: [
         _buildGoogleMap(),
         if (widget.showSearchInput) _buildSearchInput(),
-        if (widget.myLocationButtonEnabled) _buildMyLocationButton(),
+        if (widget.myLocationButtonFlutterEnabled) _buildMyLocationButton(),
         if (widget.usePinPointingSearch) _buildPinPointingIndicator(),
       ],
     );
@@ -577,6 +609,7 @@ class PlacePickerState extends State<PlacePicker>
     return SafeArea(
       child: Row(
         children: [
+          const SizedBox(width: 8),
           if (widget.backWidgetBuilder != null)
             Builder(
               builder: (ctx) => widget.backWidgetBuilder!(ctx),
@@ -688,8 +721,44 @@ class PlacePickerState extends State<PlacePicker>
     _zoom = position.zoom;
   }
 
+  Future<void> _setW3WAddress(LatLng latLng) async {
+    final location = await _getW3WCoordinates(latLng);
+    if (location != null) {
+      _setW3WWords(location.words);
+    }
+  }
+
+  Future<void> _setW3WWords(String w3wWords) async {
+    _w3wWords = '///$w3wWords';
+    previousSearchTerm = _w3wWords!;
+    _searchController.text = previousSearchTerm;
+  }
+
+  Future<void> setW3WAddress(String words) async {
+    if (w3wService == null) {
+      return;
+    }
+
+    final w3w = words.replaceAll('///', '');
+    final rs = await w3wService!.convertToCoordinates(w3w).execute();
+    if (rs.isSuccessful()) {
+      final coordinates = rs.data()?.coordinates;
+      if (coordinates == null) {
+        return;
+      }
+
+      selectedNearbyPlace = null;
+      await _setW3WWords(w3w);
+      final location = LatLng(coordinates.lat, coordinates.lng);
+      setState(() {
+        _currentLocation = location;
+      });
+      animateToLocation(location);
+    }
+  }
+
   /// On user taps map
-  onTap(LatLng position) {
+  Future<void> onTap(LatLng position) async {
     if (!widget.usePinPointingSearch) {
       setState(() {
         _searchingState = SearchingState.searching;
@@ -697,11 +766,14 @@ class PlacePickerState extends State<PlacePicker>
     }
 
     _clearOverlay();
+    if (w3wService != null) {
+      await _setW3WAddress(position);
+    }
 
-    /// remove selected nearby place
+    // remove selected nearby place
     selectedNearbyPlace = null;
     animateToLocation(position);
-    _searchController.clear();
+    // _searchController.clear(); // TODO
   }
 
   /// Debounce function for pin-pointing search
@@ -719,14 +791,14 @@ class PlacePickerState extends State<PlacePicker>
   Widget _buildMyLocationButton() {
     return Positioned(
       top: widget.myLocationFABConfig.top,
-      bottom: widget.myLocationFABConfig.bottom ?? 8.0,
-      right: widget.myLocationFABConfig.right ?? 8.0,
+      bottom: widget.myLocationFABConfig.bottom ?? 12,
+      right: widget.myLocationFABConfig.right ?? (widget.zoomControlsEnabled == true ? 60 : 8),
       left: widget.myLocationFABConfig.left,
-      child: FloatingActionButton(
+      child: FloatingActionButton.small(
         heroTag: widget.myLocationFABConfig.heroTag,
         shape: widget.myLocationFABConfig.shape,
         elevation: widget.myLocationFABConfig.elevation,
-        mini: widget.myLocationFABConfig.mini,
+        // mini: widget.myLocationFABConfig.mini,
         tooltip: widget.myLocationFABConfig.tooltip,
         backgroundColor: widget.myLocationFABConfig.backgroundColor ??
             Theme.of(context).primaryColor,
@@ -749,6 +821,7 @@ class PlacePickerState extends State<PlacePicker>
           formattedAddress: getFormattedLocationName(),
           onTap: _geocodingResult != null
               ? () {
+                  _clearOverlay();
                   widget.onPlacePicked?.call(_geocodingResult!);
                 }
               : null,
@@ -807,15 +880,23 @@ class PlacePickerState extends State<PlacePicker>
 
     if (place.isEmpty) return;
 
-    final RenderBox? searchInputBox =
-        searchInputKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? searchInputBox = searchInputKey.currentContext?.findRenderObject() as RenderBox?;
 
     _suggestionsOverlayEntry = _createSuggestionsOverlay(searchInputBox);
 
     /// Insert the finding places in suggestions overlay entry
     Overlay.of(context).insert(_suggestionsOverlayEntry!);
 
-    autoCompleteSearch(place);
+    if (w3wService == null) {
+      autoCompleteSearch(place);
+    } else {
+      final keywords = place.replaceFirst('///', '');
+      if (w3wService?.isPossible3wa(keywords) == true) {
+        autoCompleteSearchW3W(keywords);
+      } else {
+        autoCompleteSearch(place);
+      }
+    }
   }
 
   /// Creates the rich suggestions overlay entry
@@ -855,6 +936,39 @@ class PlacePickerState extends State<PlacePicker>
         ),
       ),
     );
+  }
+
+  List<RichSuggestion> _parseAutoCompleteSuggestionsW3W(
+      List<Suggestion>? suggestions) {
+    if (suggestions == null || suggestions.isEmpty) {
+      return [
+        RichSuggestion(
+          autoCompleteItem: AutoCompleteItem()
+            ..text = widget.localizationConfig.noResultsFound
+            ..offset = 0
+            ..length = 0,
+        ),
+      ];
+    }
+
+    return suggestions.map((t) {
+      int i = 0;
+      final aci = AutoCompleteItem()
+        ..id = (i++).toString()
+        ..text = t.words
+        ..mainText = t.nearestPlace
+        ..secondaryText = t.country
+        ..offset = 0
+        ..length = t.words.length;
+
+      return RichSuggestion(
+        autoCompleteItem: aci,
+        onTap: () {
+          FocusScope.of(context).requestFocus(FocusNode());
+          getDetailsAndSelectPlaceW3W(aci);
+        },
+      );
+    }).toList();
   }
 
   /// Parses the `predictions` into `RichSuggestion` array.
@@ -994,22 +1108,27 @@ class PlacePickerState extends State<PlacePicker>
       /// get the current location of user
       final LatLng position = await _getCurrentLocation();
 
+      if (w3wService != null) {
+        await _setW3WAddress(position);
+      }
+
       /// remove selected nearby place
       selectedNearbyPlace = null;
       animateToLocation(position);
-      _searchController.clear();
+      // _searchController.clear();
     } catch (e) {
       if (e is LocationServiceDisabledException && mounted) {
         Navigator.of(context).pop();
       }
-      debugPrint(e.toString());
+      widget._logError(e.toString());
     }
   }
 
   /// This method gets the human readable name of the location. Mostly appears
   /// to be the road name and the locality.
-  Future<void> _reverseGeocodeLatLng(LatLng latLng,
-      {AutoCompleteItem? autoCompleteResult}) async {
+  Future<void> _reverseGeocodeLatLng(LatLng latLng, {
+    AutoCompleteItem? autoCompleteResult
+  }) async {
     if (widget.useFreeGeocoding) {
       await _reverseGeocodeLatLngWithFreeService(latLng,
           autoCompleteResult: autoCompleteResult);
@@ -1019,8 +1138,9 @@ class PlacePickerState extends State<PlacePicker>
     }
   }
 
-  Future<void> _reverseGeocodeLatLngWithGoogle(LatLng latLng,
-      {AutoCompleteItem? autoCompleteResult}) async {
+  Future<void> _reverseGeocodeLatLngWithGoogle(LatLng latLng, {
+    AutoCompleteItem? autoCompleteResult
+  }) async {
     try {
       final response = await googleCommonService.geocode(
         latLng: latLng,
@@ -1267,6 +1387,7 @@ class PlacePickerState extends State<PlacePicker>
                 longName: postalCodeLongName,
                 shortName: postalCodeShortName,
               )
+              ..w3wWords = _w3wWords
               ..plusCode = AddressComponent(
                 longName: plusCodeLongName,
                 shortName: plusCodeShortName,
@@ -1283,12 +1404,13 @@ class PlacePickerState extends State<PlacePicker>
         _geocodingResult = _geocodingResultList.first;
       }
     } catch (e) {
-      debugPrint(e.toString());
+      widget._logError(e.toString());
     }
   }
 
-  Future<void> _reverseGeocodeLatLngWithFreeService(LatLng latLng,
-      {AutoCompleteItem? autoCompleteResult}) async {
+  Future<void> _reverseGeocodeLatLngWithFreeService(LatLng latLng, {
+    AutoCompleteItem? autoCompleteResult
+  }) async {
     try {
       final List<geocoding.Placemark> placemarks =
           await geocoding.placemarkFromCoordinates(
@@ -1345,6 +1467,7 @@ class PlacePickerState extends State<PlacePicker>
             longName: placemark.postalCode,
             shortName: placemark.postalCode,
           ),
+          w3wWords: _w3wWords
         );
 
         _geocodingResultList.add(geocodingResult);
@@ -1356,7 +1479,34 @@ class PlacePickerState extends State<PlacePicker>
         _geocodingResult = _geocodingResultList.first;
       }
     } catch (e) {
-      debugPrint(e.toString());
+      widget._logError(e.toString());
+    }
+  }
+
+  Future<void> autoCompleteSearchW3W(String w3wWords) async {
+    try {
+      final options = widget.w3wAutoSuggestOptions ?? AutosuggestOptions()..setNResults(3);
+      final response = await w3wService!
+          .autosuggest(w3wWords, options: options)
+          .execute();
+
+      if (!response.isSuccessful()) {
+        throw Exception('Failed to load auto complete predictions of w3w words: $w3wWords.');
+      }
+
+      final rs = response.data();
+      if (rs == null || rs.suggestions.isEmpty) {
+        displayAutoCompleteSuggestions([]);
+        widget._logError('No autocomplete predictions found for query: $w3wWords');
+        return;
+      }
+
+      final suggestions = _parseAutoCompleteSuggestionsW3W(rs.suggestions);
+      displayAutoCompleteSuggestions(suggestions);
+    } catch (e, stack) {
+      /// Log error and clear suggestions as fallback
+      widget._logError('Error in autoCompleteSearch for w3w words: $e\n$stack');
+      displayAutoCompleteSuggestions([]);
     }
   }
 
@@ -1379,8 +1529,7 @@ class PlacePickerState extends State<PlacePicker>
       );
 
       if (response.statusCode != 200) {
-        throw Exception(
-            'Failed to load auto complete predictions of place: $place.');
+        throw Exception('Failed to load auto complete predictions of place: $place.');
       }
 
       final responseJson = jsonDecode(response.body);
@@ -1391,13 +1540,13 @@ class PlacePickerState extends State<PlacePicker>
       if (status == PlacesAutocompleteStatus.zeroResults.status) {
         /// Handle ZERO_RESULTS gracefully
         displayAutoCompleteSuggestions([]);
-        debugPrint('No autocomplete predictions found for query: $place');
+        widget._logError('No autocomplete predictions found for query: $place');
         return;
       }
 
       if (status != PlacesAutocompleteStatus.ok.status) {
         /// Log other non-OK statuses and clear suggestions
-        debugPrint('Google Places API returned status: $status');
+        widget._logError('Google Places API returned status: $status');
         displayAutoCompleteSuggestions([]);
       }
 
@@ -1405,16 +1554,45 @@ class PlacePickerState extends State<PlacePicker>
       displayAutoCompleteSuggestions(suggestions);
     } catch (e, stack) {
       /// Log error and clear suggestions as fallback
-      debugPrint('Error in autoCompleteSearch: $e\n$stack');
+      widget._logError('Error in autoCompleteSearch: $e\n$stack');
       displayAutoCompleteSuggestions([]);
+    }
+  }
+
+  Future<void> getDetailsAndSelectPlaceW3W(AutoCompleteItem autoCompleteResult) async {
+    _clearOverlay();
+
+    try {
+      final response = await w3wService!.convertToCoordinates(autoCompleteResult.text!).execute();
+
+      if (!response.isSuccessful()) {
+        throw Exception('Failed to fetch coordinates of w3w words: ${autoCompleteResult.text}.');
+      }
+
+      if (response.data() == null) {
+        throw Error();
+      }
+
+      final location = response.data()!;
+
+      if (mapController.isCompleted) {
+        await _setW3WWords(autoCompleteResult.text!);
+        /// remove selected nearby place
+        selectedNearbyPlace = null;
+        await animateToLocation(LatLng(location.coordinates.lat, location.coordinates.lng),
+            autoCompleteResult: autoCompleteResult);
+
+        // _searchController.clear(); // TODO: review
+      }
+    } catch (e) {
+      widget._logError(e.toString());
     }
   }
 
   /// To navigate to the selected place from the autocomplete list to the map,
   /// the lat,lng is required. This method fetches the lat,lng of the place and
   /// proceeds to moving the map to that location.
-  Future<void> getDetailsAndSelectPlace(
-      AutoCompleteItem autoCompleteResult) async {
+  Future<void> getDetailsAndSelectPlace(AutoCompleteItem autoCompleteResult) async {
     _clearOverlay();
 
     try {
@@ -1427,8 +1605,7 @@ class PlacePickerState extends State<PlacePicker>
       );
 
       if (response.statusCode != 200) {
-        throw Exception(
-            'Failed to fetch details of placeId: ${autoCompleteResult.id}.');
+        throw Exception('Failed to fetch details of placeId: ${autoCompleteResult.id}.');
       }
 
       final responseJson = jsonDecode(response.body);
@@ -1439,14 +1616,17 @@ class PlacePickerState extends State<PlacePicker>
 
       final location = responseJson['result']['geometry']['location'];
       if (mapController.isCompleted) {
-        /// remove selected nearby place
+        final latLng = LatLng(location['lat'], location['lng']);
+        if (w3wService != null) {
+          await _setW3WAddress(latLng);
+        }
+        // remove selected nearby place
         selectedNearbyPlace = null;
-        await animateToLocation(LatLng(location['lat'], location['lng']),
-            autoCompleteResult: autoCompleteResult);
-        _searchController.clear();
+        await animateToLocation(latLng, autoCompleteResult: autoCompleteResult);
+        // _searchController.clear();
       }
     } catch (e) {
-      debugPrint(e.toString());
+      widget._logError(e.toString());
     }
   }
 
@@ -1492,11 +1672,7 @@ class PlacePickerState extends State<PlacePicker>
     }
   }
 
-  /// Get current location API
-  Future<LatLng> _getCurrentLocation() async {
-    const fallbackLocation = PlacePicker.defaultLocation;
-    const timeoutDuration = Duration(seconds: 10);
-
+  Future<void> checkPermission() async {
     /// 1. Ensure location services are enabled
     /// Test if location services are enabled.
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -1533,6 +1709,14 @@ class PlacePickerState extends State<PlacePicker>
       return Future.error(
           'Location permissions are permanently denied, we cannot request permissions.');
     }
+  }
+
+  /// Get current location API
+  Future<LatLng> _getCurrentLocation() async {
+    checkPermission();
+
+    const fallbackLocation = PlacePicker.defaultLocation;
+    const timeoutDuration = Duration(seconds: 10);
 
     /// 3. Try to get current location
     try {
@@ -1549,7 +1733,7 @@ class PlacePickerState extends State<PlacePicker>
         return fallbackLocation;
       }
     } catch (e) {
-      debugPrint('Location fetch error: $e');
+      widget._logError('Location fetch error: $e');
       return fallbackLocation;
     }
   }
@@ -1600,7 +1784,7 @@ class PlacePickerState extends State<PlacePicker>
                 child: const Text("OK"),
                 onPressed: () {
                   Geolocator.openLocationSettings().then((value) {
-                    if (mounted) Navigator.of(context).pop(true);
+                    if (context.mounted) Navigator.of(context).pop(true);
                   });
                 },
               ),
@@ -1618,7 +1802,8 @@ class PlacePickerState extends State<PlacePicker>
   /// then the road name returned is used instead.
   String? getLocationName() {
     if (_geocodingResult == null) {
-      return widget.localizationConfig.unnamedLocation;
+      // return widget.localizationConfig.unnamedLocation;
+      return '';
     }
 
     if (selectedNearbyPlace != null) {
@@ -1631,9 +1816,34 @@ class PlacePickerState extends State<PlacePicker>
   /// Utility function to get clean readable formatted address of a location.
   String getFormattedLocationName() {
     if (_geocodingResult == null) {
-      return widget.localizationConfig.unnamedLocation;
+      // return widget.localizationConfig.unnamedLocation;
+      return '';
     }
 
     return "${_geocodingResult?.formattedAddress}";
+  }
+
+  Future<Location?> _getW3WCoordinates(LatLng latlang) async {
+    final response = await w3wService!.convertTo3wa(Coordinates(
+      double.parse(latlang.latitude.toStringAsFixed(6)),
+      double.parse(latlang.longitude.toStringAsFixed(6))
+    ))
+    .language(widget.w3wAutoSuggestOptions?.language??'en')
+    .execute();
+
+    if (response.isSuccessful()) {
+      return response.data();
+    }
+
+    widget._logError('Failed to get w3w words. ${_getW3WError(response.error())}');
+    return null;
+  }
+
+  String _getW3WError(What3WordsError? error) {
+    if (error == null) {
+      return '';
+    }
+
+    return 'Code: ${error.code}, message: ${error.message}';
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
@@ -15,7 +16,7 @@ import 'package:place_picker_google/src/services/index.dart';
 import 'package:place_picker_google/src/utils/index.dart';
 import 'package:what3words/what3words.dart';
 
-typedef Consumer<T> = void Function(T arg);
+typedef BiConsumer<String, bool> = void Function(String a, bool b);
 
 typedef SelectedPlaceWidgetBuilder = Widget Function(
   BuildContext context,
@@ -83,6 +84,8 @@ class PlacePicker extends StatefulWidget {
   final bool showSearchInput;
   final SearchInputConfig searchInputConfig;
   final SearchInputDecorationConfig searchInputDecorationConfig;
+
+  final double gridDiagonalLengthInMetre;
 
   /// Nearby Places
   final TextStyle? nearbyPlaceItemStyle;
@@ -223,7 +226,7 @@ class PlacePicker extends StatefulWidget {
   final Set<Polygon> polygons;
 
   /// Polylines to be placed on the map.
-  final Set<Polyline> polylines;
+  // final Set<Polyline> polylines;
 
   /// Tile overlays to be placed on the map.
   final Set<TileOverlay> tileOverlays;
@@ -260,7 +263,7 @@ class PlacePicker extends StatefulWidget {
   /// instead of the priced one provided by Google.
   final bool useFreeGeocoding;
 
-  final Consumer? logError;
+  final BiConsumer? log;
 
   const PlacePicker({
     super.key,
@@ -288,6 +291,7 @@ class PlacePicker extends StatefulWidget {
     this.autoCompleteOverlayElevation = 0,
     this.pinPointingDebounceDuration = 500,
     this.pinPointingPinWidgetBuilder,
+    this.gridDiagonalLengthInMetre = 1000,
     this.autocompletePlacesSearchRadius,
     this.showSearchInput = true,
     this.enableNearbyPlaces = true,
@@ -312,7 +316,7 @@ class PlacePicker extends StatefulWidget {
     this.cloudMapId,
     this.onLongPress,
     this.polygons = const <Polygon>{},
-    this.polylines = const <Polyline>{},
+    // this.polylines = const <Polyline>{},
     this.tileOverlays = const <TileOverlay>{},
     this.gestureRecognizers = const <Factory<OneSequenceGestureRecognizer>>{},
     this.circles = const <Circle>{},
@@ -321,12 +325,12 @@ class PlacePicker extends StatefulWidget {
     this.googleAPIParameters = const GoogleAPIParameters(),
     this.w3wAutoSuggestOptions,
     this.backWidgetBuilder,
-    this.logError
+    this.log
   });
 
-  void _logError(String ob) {
-    if (logError != null) {
-      logError!(ob);
+  void _log(String ob, [bool isError = true]) {
+    if (log != null) {
+      log!(ob, isError);
     } else {
       debugPrint(ob);
     }
@@ -412,6 +416,8 @@ class PlacePickerState extends State<PlacePicker>
   /// internal state to handle the searching state
   SearchingState _searchingState = SearchingState.idle;
 
+  late LatLngBounds _latLngBounds;
+
   /// simple getter to check whether searchingState is searching
   bool get isSearching => _searchingState == SearchingState.searching;
 
@@ -426,6 +432,8 @@ class PlacePickerState extends State<PlacePicker>
 
   /// The selected nearby place if enabled.
   NearbyPlace? selectedNearbyPlace;
+
+  final Set<Polyline> _polylines = {};
 
   @override
   void setState(fn) {
@@ -455,28 +463,26 @@ class PlacePickerState extends State<PlacePicker>
       if (widget.initialLocation != null) {
         position = widget.initialLocation!;
         if (w3wService != null) {
-          _setW3WAddress(position);
+          _setW3WAddressByCoordinates(position);
         }
       } else {
         position = await _getCurrentLocation();
       }
 
-      if (mounted) {
-        setState(() {
-          _currentLocation = position;
+      setState(() {
+        _currentLocation = position;
 
-          if (!widget.usePinPointingSearch && widget.initialLocation != null) {
-            markers.add(
-              Marker(
-                position: widget.initialLocation!,
-                markerId: const MarkerId("selected-location"),
-              ),
-            );
-          }
+        if (!widget.usePinPointingSearch) {
+          markers.add(
+            Marker(
+              position: position,
+              markerId: const MarkerId("selected-location"),
+            ),
+          );
+        }
 
-          _canLoadMap = true;
-        });
-      }
+        _canLoadMap = true;
+      });
     } catch (e) {
       if (e is LocationServiceDisabledException && mounted) {
         Navigator.of(context).pop();
@@ -485,7 +491,7 @@ class PlacePickerState extends State<PlacePicker>
           _canLoadMap = true;
         });
       }
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
@@ -539,6 +545,8 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   Widget _buildGoogleMap() {
+    debugPrint('Google map built');
+
     return Builder(builder: (context) {
       return GoogleMap(
         initialCameraPosition: CameraPosition(
@@ -572,6 +580,7 @@ class PlacePickerState extends State<PlacePicker>
         trafficEnabled: widget.trafficEnabled,
         cloudMapId: widget.cloudMapId,
         onLongPress: widget.onLongPress,
+        polylines: _polylines,
         polygons: widget.polygons,
         circles: widget.circles,
         cameraTargetBounds: widget.cameraTargetBounds,
@@ -663,10 +672,16 @@ class PlacePickerState extends State<PlacePicker>
 
   /// GOOGLE MAPS FLUTTER CALLBACKS
   /// On map created
-  void onMapCreated(GoogleMapController controller) {
+  void onMapCreated(GoogleMapController controller) async {
+    debugPrint('onMapCreated');
     mapController.complete(controller);
 
-    moveToCurrentUserLocation();
+    if (_currentLocation != null) {
+      _latLngBounds = await controller.getVisibleRegion();
+      await _fetchAndDrawGrid(_currentLocation!);
+    }
+
+    await moveToCurrentUserLocation();
 
     if (widget.usePinPointingSearch) {
       setState(() {
@@ -681,6 +696,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// On Camera idle
   void onCameraIdle() {
+    debugPrint('onCameraIdle');
     if (_isAnimating) return;
 
     /// if not pin pointing search
@@ -693,6 +709,7 @@ class PlacePickerState extends State<PlacePicker>
     }
 
     setState(() {
+      debugPrint('set State 0');
       _pinState = PinState.idle;
     });
   }
@@ -702,6 +719,7 @@ class PlacePickerState extends State<PlacePicker>
     if (_isAnimating) return;
 
     setState(() {
+      debugPrint('set State 1');
       _pinState = PinState.dragging;
       if (widget.usePinPointingSearch) {
         _searchingState = SearchingState.searching;
@@ -711,6 +729,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// On Camera move
   void onCameraMove(CameraPosition position) {
+    debugPrint('onCameraMove');
     if (_isAnimating) return;
 
     /// set current camera position
@@ -721,20 +740,16 @@ class PlacePickerState extends State<PlacePicker>
     _zoom = position.zoom;
   }
 
-  Future<void> _setW3WAddress(LatLng latLng) async {
+  Future<void> _setW3WAddressByCoordinates(LatLng latLng) async {
+    debugPrint('_setW3WAddressByCoordinates');
     final location = await _getW3WCoordinates(latLng);
     if (location != null) {
-      _setW3WWords(location.words);
+      await _setW3WWords(location.words);
     }
   }
 
-  Future<void> _setW3WWords(String w3wWords) async {
-    _w3wWords = '///$w3wWords';
-    previousSearchTerm = _w3wWords!;
-    _searchController.text = previousSearchTerm;
-  }
-
-  Future<void> setW3WAddress(String words) async {
+  Future<void> setW3WAddressByWords(String words) async {
+    debugPrint('setW3WAddressByWords');
     if (w3wService == null) {
       return;
     }
@@ -750,24 +765,34 @@ class PlacePickerState extends State<PlacePicker>
       selectedNearbyPlace = null;
       await _setW3WWords(w3w);
       final location = LatLng(coordinates.lat, coordinates.lng);
-      setState(() {
-        _currentLocation = location;
-      });
+      // setState(() {
+      //   _currentLocation = location;
+      // });
       animateToLocation(location);
     }
   }
 
+  Future<void> _setW3WWords(String w3wWords) async {
+    debugPrint('_setW3WWords');
+    _w3wWords = '///$w3wWords';
+    previousSearchTerm = _w3wWords!;
+    _searchController.text = previousSearchTerm;
+  }
+
   /// On user taps map
   Future<void> onTap(LatLng position) async {
-    if (!widget.usePinPointingSearch) {
-      setState(() {
-        _searchingState = SearchingState.searching;
-      });
-    }
+    debugPrint('onTap');
+    // Commented out to prevent multiple google map load
+    // if (!widget.usePinPointingSearch) {
+    //   setState(() {
+    //     debugPrint('set State 2');
+    //     _searchingState = SearchingState.searching;
+    //   });
+    // }
 
     _clearOverlay();
     if (w3wService != null) {
-      await _setW3WAddress(position);
+      await _setW3WAddressByCoordinates(position);
     }
 
     // remove selected nearby place
@@ -778,6 +803,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Debounce function for pin-pointing search
   void _debouncePinPointing(LatLng target) {
+    debugPrint('_debouncePinPointing');
     _debounce?.cancel();
     _debounce =
         Timer(Duration(milliseconds: widget.pinPointingDebounceDuration), () {
@@ -859,6 +885,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Hides the autocomplete overlay
   void _clearOverlay() async {
+    debugPrint('_clearOverlay');
     if (_suggestionsOverlayEntry != null) {
       _suggestionsOverlayEntry?.remove();
       _suggestionsOverlayEntry = null;
@@ -870,6 +897,7 @@ class PlacePickerState extends State<PlacePicker>
   /// is hidden so as to give more room and better experience for the
   /// autocomplete list overlay.
   void searchPlace(String place) {
+    debugPrint('searchPlace');
     /// on keyboard dismissal, the search was being triggered again
     /// this is to cap that.
     if (place == previousSearchTerm) return;
@@ -901,6 +929,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Creates the rich suggestions overlay entry
   OverlayEntry _createSuggestionsOverlay(RenderBox? searchInputBox) {
+    debugPrint('_createSuggestionsOverlay');
     return OverlayEntry(
       builder: (context) => Positioned(
         width: searchInputBox?.size.width,
@@ -938,8 +967,8 @@ class PlacePickerState extends State<PlacePicker>
     );
   }
 
-  List<RichSuggestion> _parseAutoCompleteSuggestionsW3W(
-      List<Suggestion>? suggestions) {
+  List<RichSuggestion> _parseAutoCompleteSuggestionsW3W(List<Suggestion>? suggestions) {
+    debugPrint('_parseAutoCompleteSuggestionsW3W');
     if (suggestions == null || suggestions.isEmpty) {
       return [
         RichSuggestion(
@@ -972,8 +1001,8 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   /// Parses the `predictions` into `RichSuggestion` array.
-  List<RichSuggestion> _parseAutoCompleteSuggestions(
-      List<dynamic>? predictions) {
+  List<RichSuggestion> _parseAutoCompleteSuggestions(List<dynamic>? predictions) {
+    debugPrint('_parseAutoCompleteSuggestions');
     if (predictions == null || predictions.isEmpty) {
       return [
         RichSuggestion(
@@ -1008,6 +1037,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Display autocomplete suggestions with the overlay.
   void displayAutoCompleteSuggestions(List<RichSuggestion> suggestions) {
+    debugPrint('displayAutoCompleteSuggestions');
     final RenderBox? searchInputBox =
         searchInputKey.currentContext?.findRenderObject() as RenderBox?;
 
@@ -1040,6 +1070,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Moves the marker to the indicated lat,lng
   void setMarker(LatLng latLng) {
+    debugPrint('setMarker');
     setState(() {
       markers.clear();
       markers.add(
@@ -1056,6 +1087,7 @@ class PlacePickerState extends State<PlacePicker>
   /// match the location.
   Future<void> animateToLocation(LatLng latLng,
       {AutoCompleteItem? autoCompleteResult}) async {
+    debugPrint('animateToLocation');
     _isAnimating = true;
 
     final controller = await mapController.future;
@@ -1077,15 +1109,30 @@ class PlacePickerState extends State<PlacePicker>
 
     if (widget.enableNearbyPlaces) await _getNearbyPlaces(latLng);
 
+    if (w3wService != null) {
+      if (_isLatLngInBounds(latLng, _latLngBounds)) {
+        debugPrint('Latitude: ${latLng.latitude}, Longitude: ${latLng.longitude} is within previous bound: $_latLngBounds. Grid not fetched');
+      } else {
+        _isAnimating = false;
+        debugPrint('set State 3');
+        _fetchAndDrawGrid(latLng).then((_) => setState(() => _searchingState = SearchingState.idle));
+        return;
+      }
+    }
+
     _isAnimating = false;
 
     /// set searching state to idle
-    setState(() {
-      _searchingState = SearchingState.idle;
-    });
+    if (_searchingState != SearchingState.idle) {
+      setState(() {
+        debugPrint('set State 4');
+        _searchingState = SearchingState.idle;
+      });
+    }
   }
 
-  void moveToCurrentUserLocation() async {
+  Future<void> moveToCurrentUserLocation() async {
+    debugPrint('moveToCurrentUserLocation');
     if (widget.initialLocation != null) {
       animateToLocation(widget.initialLocation!);
     } else if (_currentLocation != null) {
@@ -1099,9 +1146,11 @@ class PlacePickerState extends State<PlacePicker>
   /// Function will animate the camera to current location, given user has provided
   /// permission for location access.
   Future<void> _locateMe() async {
+    debugPrint('_locateMe');
     try {
       /// set searching state as searching
       setState(() {
+        debugPrint('set State 5');
         _searchingState = SearchingState.searching;
       });
 
@@ -1109,7 +1158,7 @@ class PlacePickerState extends State<PlacePicker>
       final LatLng position = await _getCurrentLocation();
 
       if (w3wService != null) {
-        await _setW3WAddress(position);
+        await _setW3WAddressByCoordinates(position);
       }
 
       /// remove selected nearby place
@@ -1120,7 +1169,7 @@ class PlacePickerState extends State<PlacePicker>
       if (e is LocationServiceDisabledException && mounted) {
         Navigator.of(context).pop();
       }
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
@@ -1129,6 +1178,7 @@ class PlacePickerState extends State<PlacePicker>
   Future<void> _reverseGeocodeLatLng(LatLng latLng, {
     AutoCompleteItem? autoCompleteResult
   }) async {
+    debugPrint('_reverseGeocodeLatLng');
     if (widget.useFreeGeocoding) {
       await _reverseGeocodeLatLngWithFreeService(latLng,
           autoCompleteResult: autoCompleteResult);
@@ -1141,6 +1191,7 @@ class PlacePickerState extends State<PlacePicker>
   Future<void> _reverseGeocodeLatLngWithGoogle(LatLng latLng, {
     AutoCompleteItem? autoCompleteResult
   }) async {
+    debugPrint('_reverseGeocodeLatLngWithGoogle');
     try {
       final response = await googleCommonService.geocode(
         latLng: latLng,
@@ -1404,13 +1455,14 @@ class PlacePickerState extends State<PlacePicker>
         _geocodingResult = _geocodingResultList.first;
       }
     } catch (e) {
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
   Future<void> _reverseGeocodeLatLngWithFreeService(LatLng latLng, {
     AutoCompleteItem? autoCompleteResult
   }) async {
+    debugPrint('_reverseGeocodeLatLngWithFreeService');
     try {
       final List<geocoding.Placemark> placemarks =
           await geocoding.placemarkFromCoordinates(
@@ -1479,11 +1531,12 @@ class PlacePickerState extends State<PlacePicker>
         _geocodingResult = _geocodingResultList.first;
       }
     } catch (e) {
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
   Future<void> autoCompleteSearchW3W(String w3wWords) async {
+    debugPrint('autoCompleteSearchW3W');
     try {
       final options = widget.w3wAutoSuggestOptions ?? AutosuggestOptions()..setNResults(3);
       final response = await w3wService!
@@ -1497,7 +1550,7 @@ class PlacePickerState extends State<PlacePicker>
       final rs = response.data();
       if (rs == null || rs.suggestions.isEmpty) {
         displayAutoCompleteSuggestions([]);
-        widget._logError('No autocomplete predictions found for query: $w3wWords');
+        widget._log('No autocomplete predictions found for query: $w3wWords');
         return;
       }
 
@@ -1505,13 +1558,14 @@ class PlacePickerState extends State<PlacePicker>
       displayAutoCompleteSuggestions(suggestions);
     } catch (e, stack) {
       /// Log error and clear suggestions as fallback
-      widget._logError('Error in autoCompleteSearch for w3w words: $e\n$stack');
+      widget._log('Error in autoCompleteSearch for w3w words: $e\n$stack');
       displayAutoCompleteSuggestions([]);
     }
   }
 
   /// Fetches the place autocomplete list with the query [place].
   Future<void> autoCompleteSearch(String place) async {
+    debugPrint('autoCompleteSearch');
     try {
       place = place.replaceAll(" ", "+");
 
@@ -1540,13 +1594,13 @@ class PlacePickerState extends State<PlacePicker>
       if (status == PlacesAutocompleteStatus.zeroResults.status) {
         /// Handle ZERO_RESULTS gracefully
         displayAutoCompleteSuggestions([]);
-        widget._logError('No autocomplete predictions found for query: $place');
+        widget._log('No autocomplete predictions found for query: $place');
         return;
       }
 
       if (status != PlacesAutocompleteStatus.ok.status) {
         /// Log other non-OK statuses and clear suggestions
-        widget._logError('Google Places API returned status: $status');
+        widget._log('Google Places API returned status: $status');
         displayAutoCompleteSuggestions([]);
       }
 
@@ -1554,12 +1608,13 @@ class PlacePickerState extends State<PlacePicker>
       displayAutoCompleteSuggestions(suggestions);
     } catch (e, stack) {
       /// Log error and clear suggestions as fallback
-      widget._logError('Error in autoCompleteSearch: $e\n$stack');
+      widget._log('Error in autoCompleteSearch: $e\n$stack');
       displayAutoCompleteSuggestions([]);
     }
   }
 
   Future<void> getDetailsAndSelectPlaceW3W(AutoCompleteItem autoCompleteResult) async {
+    debugPrint('getDetailsAndSelectPlaceW3W');
     _clearOverlay();
 
     try {
@@ -1585,7 +1640,7 @@ class PlacePickerState extends State<PlacePicker>
         // _searchController.clear(); // TODO: review
       }
     } catch (e) {
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
@@ -1593,6 +1648,7 @@ class PlacePickerState extends State<PlacePicker>
   /// the lat,lng is required. This method fetches the lat,lng of the place and
   /// proceeds to moving the map to that location.
   Future<void> getDetailsAndSelectPlace(AutoCompleteItem autoCompleteResult) async {
+    debugPrint('getDetailsAndSelectPlace');
     _clearOverlay();
 
     try {
@@ -1617,8 +1673,9 @@ class PlacePickerState extends State<PlacePicker>
       final location = responseJson['result']['geometry']['location'];
       if (mapController.isCompleted) {
         final latLng = LatLng(location['lat'], location['lng']);
+
         if (w3wService != null) {
-          await _setW3WAddress(latLng);
+          await _setW3WAddressByCoordinates(latLng);
         }
         // remove selected nearby place
         selectedNearbyPlace = null;
@@ -1626,12 +1683,13 @@ class PlacePickerState extends State<PlacePicker>
         // _searchController.clear();
       }
     } catch (e) {
-      widget._logError(e.toString());
+      widget._log(e.toString());
     }
   }
 
   /// Fetches and updates the nearby places to the provided lat,lng
   Future<void> _getNearbyPlaces(LatLng latLng) async {
+    debugPrint('_getNearbyPlaces');
     try {
       final response = await googleMapsPlacesService.nearbySearch(
         latLng,
@@ -1673,6 +1731,7 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   Future<void> checkPermission() async {
+    debugPrint('checkPermission');
     /// 1. Ensure location services are enabled
     /// Test if location services are enabled.
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -1713,6 +1772,7 @@ class PlacePickerState extends State<PlacePicker>
 
   /// Get current location API
   Future<LatLng> _getCurrentLocation() async {
+    debugPrint('_getCurrentLocation');
     checkPermission();
 
     const fallbackLocation = PlacePicker.defaultLocation;
@@ -1733,37 +1793,38 @@ class PlacePickerState extends State<PlacePicker>
         return fallbackLocation;
       }
     } catch (e) {
-      widget._logError('Location fetch error: $e');
+      widget._log('Location fetch error: $e');
       return fallbackLocation;
     }
   }
 
   Future<dynamic> _showLocationDisabledAlertDialog(BuildContext context) {
+    debugPrint('_showLocationDisabledAlertDialog');
     if (Platform.isiOS) {
       return showCupertinoDialog(
-          context: context,
-          builder: (BuildContext ctx) {
-            return CupertinoAlertDialog(
-              title: const Text("Location is disabled"),
-              content: const Text(
-                "To use location, go to your Settings App > Privacy > Location Services.",
+        context: context,
+        builder: (BuildContext ctx) {
+          return CupertinoAlertDialog(
+            title: const Text("Location is disabled"),
+            content: const Text(
+              "To use location, go to your Settings App > Privacy > Location Services.",
+            ),
+            actions: [
+              CupertinoDialogAction(
+                child: const Text("Cancel"),
+                onPressed: () {
+                  Navigator.of(context).pop(false);
+                },
               ),
-              actions: [
-                CupertinoDialogAction(
-                  child: const Text("Cancel"),
-                  onPressed: () {
-                    Navigator.of(context).pop(false);
-                  },
-                ),
-                CupertinoDialogAction(
-                  child: const Text("Ok"),
-                  onPressed: () {
-                    Navigator.of(context).pop(true);
-                  },
-                )
-              ],
-            );
-          });
+              CupertinoDialogAction(
+                child: const Text("Ok"),
+                onPressed: () {
+                  Navigator.of(context).pop(true);
+                },
+              )
+            ],
+          );
+        });
     } else {
       return showDialog(
         context: context,
@@ -1801,6 +1862,7 @@ class PlacePickerState extends State<PlacePicker>
   /// result, instead of road name). If no name is found from the nearby list,
   /// then the road name returned is used instead.
   String? getLocationName() {
+    debugPrint('getLocationName');
     if (_geocodingResult == null) {
       // return widget.localizationConfig.unnamedLocation;
       return '';
@@ -1835,7 +1897,7 @@ class PlacePickerState extends State<PlacePicker>
       return response.data();
     }
 
-    widget._logError('Failed to get w3w words. ${_getW3WError(response.error())}');
+    widget._log('Failed to get w3w words. ${_getW3WError(response.error())}');
     return null;
   }
 
@@ -1845,5 +1907,89 @@ class PlacePickerState extends State<PlacePicker>
     }
 
     return 'Code: ${error.code}, message: ${error.message}';
+  }
+
+  Future<void> _fetchAndDrawGrid(LatLng latLng) async {
+    debugPrint('_fetchAndDrawGrid');
+
+    final controller = await mapController.future;
+    _latLngBounds = await controller.getVisibleRegion();
+    _latLngBounds = _expandBoundsIfNeeded(_latLngBounds, minDiagonalMeters: widget.gridDiagonalLengthInMetre);
+
+    final response = await w3wService?.gridSection(
+      Coordinates(_latLngBounds.southwest.latitude, _latLngBounds.southwest.longitude),
+      Coordinates(_latLngBounds.northeast.latitude, _latLngBounds.northeast.longitude)
+    ).execute();
+
+    if (response != null && response.isSuccessful()) {
+      final GridSection? grid = response.data();
+      if (grid != null) {
+        _polylines.clear();
+        for (final line in grid.lines) {
+          _polylines.add(
+            Polyline(
+              polylineId: PolylineId('${line.start.lat}-${line.start.lng}'),
+              points: [
+                LatLng(line.start.lat, line.start.lng),
+                LatLng(line.end.lat, line.end.lng),
+              ],
+              color: const Color(0x550000FF), // semi-transparent blue
+              width: 1,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  LatLngBounds _expandBoundsIfNeeded(LatLngBounds bounds, {required double minDiagonalMeters}) {
+    double distanceMeters(LatLng a, LatLng b) {
+      const R = 6371000; // Earth radius in meters
+      final dLat = (b.latitude - a.latitude) * math.pi / 180;
+      final dLng = (b.longitude - a.longitude) * math.pi / 180;
+      final lat1 = a.latitude * math.pi / 180;
+      final lat2 = b.latitude * math.pi / 180;
+
+      final haversine = math.sin(dLat / 2) * math.sin(dLat / 2) +
+          math.cos(lat1) * math.cos(lat2) * math.sin(dLng / 2) * math.sin(dLng / 2);
+      final c = 2 * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine));
+      return R * c;
+    }
+
+    double diagonal = distanceMeters(bounds.southwest, bounds.northeast);
+    if (diagonal >= minDiagonalMeters) return bounds;
+
+    // Calculate factor to expand latitude and longitude
+    final factor = (minDiagonalMeters - diagonal) / diagonal / 2;
+
+    final latExpand = (bounds.northeast.latitude - bounds.southwest.latitude) * factor;
+    final lngExpand = (bounds.northeast.longitude - bounds.southwest.longitude) * factor;
+
+    final sw = LatLng(bounds.southwest.latitude - latExpand, bounds.southwest.longitude - lngExpand);
+    final ne = LatLng(bounds.northeast.latitude + latExpand, bounds.northeast.longitude + lngExpand);
+
+    return LatLngBounds(southwest: sw, northeast: ne);
+  }
+
+  bool _isLatLngInBounds(LatLng point, LatLngBounds bounds) {
+    final lat = point.latitude;
+    final lng = point.longitude;
+
+    final south = bounds.southwest.latitude;
+    final north = bounds.northeast.latitude;
+    final west = bounds.southwest.longitude;
+    final east = bounds.northeast.longitude;
+
+    bool inLat = lat >= south && lat <= north;
+
+    bool inLng;
+    // Handle the case when bounds cross the anti-meridian (180°)
+    if (west <= east) {
+      inLng = lng >= west && lng <= east;
+    } else {
+      inLng = lng >= west || lng <= east;
+    }
+
+    return inLat && inLng;
   }
 }

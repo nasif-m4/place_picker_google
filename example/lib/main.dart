@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'package:place_picker_google/place_picker_google.dart';
 import 'package:what3words/what3words.dart';
 
@@ -11,6 +14,12 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await dotenv.load(fileName: "assets/.env");
+
+  final GoogleMapsFlutterPlatform mapsImplementation =
+      GoogleMapsFlutterPlatform.instance;
+  if (mapsImplementation is GoogleMapsFlutterAndroid) {
+    initializeMapRenderer();
+  }
 
   runApp(
     const MyApp(),
@@ -44,7 +53,7 @@ class GooglePlacePickerExample extends StatefulWidget {
 
 class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
   GoogleMapController? mapController;
-  bool _useFreeGeocoding = true;
+  bool _useFreeGeocoding = false;
 
   @override
   void initState() {
@@ -150,4 +159,36 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
       ),
     );
   }
+}
+
+
+Completer<AndroidMapRenderer?>? _initializedRendererCompleter;
+
+Future<AndroidMapRenderer?> initializeMapRenderer() async {
+  if (_initializedRendererCompleter != null) {
+    return _initializedRendererCompleter!.future;
+  }
+
+  final Completer<AndroidMapRenderer?> completer =
+  Completer<AndroidMapRenderer?>();
+  _initializedRendererCompleter = completer;
+
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final GoogleMapsFlutterPlatform mapsImplementation =
+      GoogleMapsFlutterPlatform.instance;
+  if (mapsImplementation is GoogleMapsFlutterAndroid) {
+    unawaited(
+      mapsImplementation
+          .initializeWithRenderer(AndroidMapRenderer.latest)
+          .then(
+            (AndroidMapRenderer initializedRenderer) =>
+            completer.complete(initializedRenderer),
+      ),
+    );
+  } else {
+    completer.complete(null);
+  }
+
+  return completer.future;
 }

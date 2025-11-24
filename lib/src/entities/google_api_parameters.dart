@@ -1,5 +1,4 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-
 import 'package:place_picker_google/place_picker_google.dart';
 
 class GoogleAPIParameters {
@@ -27,7 +26,7 @@ class GoogleAPIParameters {
 
   /// Region for restricting results to a set of regions
   /// region: "us"
-  final String region;
+  final String? region;
 
   /// Types for restricting results to a set of place types
   final List<String> types;
@@ -46,7 +45,7 @@ class GoogleAPIParameters {
     this.origin,
     this.radius,
     this.language = "en",
-    this.region = "us",
+    this.region = "uk",
     this.strictbounds = false,
     this.types = const [],
     this.components = const [],

@@ -1,17 +1,25 @@
+import 'dart:async';
+import 'dart:ui';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_config/flutter_config.dart';
-import 'package:place_picker_google/place_picker_google.dart';
-
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_map_dynamic_key/google_map_dynamic_key.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-
-import 'dart:io' show Platform;
+import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
+import 'package:place_picker_google/place_picker_google.dart';
+import 'package:what3words/what3words.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  if (!kIsWeb) {
-    await FlutterConfig.loadEnvVariables();
+  await dotenv.load(fileName: "assets/.env");
+
+  final GoogleMapsFlutterPlatform mapsImplementation =
+      GoogleMapsFlutterPlatform.instance;
+  if (mapsImplementation is GoogleMapsFlutterAndroid) {
+    initializeMapRenderer();
   }
 
   runApp(
@@ -49,6 +57,14 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
   bool _useFreeGeocoding = false;
 
   @override
+  void initState() {
+    super.initState();
+
+    final googleMapDynamicKeyPlugin = GoogleMapDynamicKey();
+    googleMapDynamicKeyPlugin.setGoogleApiKey(dotenv.env['GOOGLE_MAPS_API_KEY']!);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(
@@ -75,29 +91,49 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
   }
 
   void showPlacePicker() {
+    final w3wAutoSuggestOptions = AutosuggestOptions()
+      ..setLanguage('en')
+      ..setNResults(3);
+    final localCountryCode = PlatformDispatcher.instance.locale.countryCode;
+    if (localCountryCode != null) {
+      w3wAutoSuggestOptions.setClipToCountry([localCountryCode]);
+    }
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) {
           return PlacePicker(
+            backWidgetBuilder: (context) {
+              return InkWell(
+                child: const Icon(Icons.arrow_back),
+                onTap: () {
+                  Navigator.of(context).pop();
+                },
+              );
+            },
+            w3wAutoSuggestOptions: w3wAutoSuggestOptions,
+            googleAPIParameters: GoogleAPIParameters(
+              fields: ['geometry/location'],
+              language: 'en',
+              region: localCountryCode?.toLowerCase(),
+            ),
             useFreeGeocoding: _useFreeGeocoding,
             mapsBaseUrl: kIsWeb
                 ? 'https://cors-anywhere.herokuapp.com/https://maps.googleapis.com/maps/api/'
                 : "https://maps.googleapis.com/maps/api/",
-            usePinPointingSearch: true,
-            apiKey: kIsWeb
-                ? "GOOGLE_MAPS_API_KEY_WEB"
-                : Platform.isAndroid
-                    ? FlutterConfig.get('GOOGLE_MAPS_API_KEY_ANDROID')
-                    : FlutterConfig.get('GOOGLE_MAPS_API_KEY_IOS'),
+            usePinPointingSearch: false,
+            apiKey: dotenv.env['GOOGLE_MAPS_API_KEY']!,
+            w3wApiKey: dotenv.env['W3W_API_KEY'],
             onPlacePicked: (LocationResult result) {
               debugPrint("Place picked: ${result.formattedAddress}");
+              debugPrint("W3W address: ${result.w3wWords}");
               Navigator.of(context).pop();
             },
             enableNearbyPlaces: false,
             showSearchInput: true,
             initialLocation: const LatLng(
-              29.378586,
-              47.990341,
+              23.878100,
+              90.397298,
             ),
             myLocationEnabled: true,
             myLocationButtonEnabled: true,
@@ -112,8 +148,19 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
               autofocus: false,
               textDirection: TextDirection.ltr,
             ),
-            searchInputDecorationConfig: const SearchInputDecorationConfig(
-              hintText: "Search for a building, street or ...",
+            searchInputDecorationConfig: SearchInputDecorationConfig(
+              hintText: "Find your address",
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(50.0),
+                borderSide: BorderSide.none, // Hide the default border
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 20.0,
+                vertical: 15.0,
+              )
+            ),
+            selectedPlaceConfig: const SelectedPlaceConfig.init(
+              actionButtonText: 'Select place',
             ),
             // selectedPlaceWidgetBuilder: (ctx, state, result) {
             //   return const SizedBox.shrink();
@@ -124,4 +171,36 @@ class _GooglePlacePickerExampleState extends State<GooglePlacePickerExample> {
       ),
     );
   }
+}
+
+
+Completer<AndroidMapRenderer?>? _initializedRendererCompleter;
+
+Future<AndroidMapRenderer?> initializeMapRenderer() async {
+  if (_initializedRendererCompleter != null) {
+    return _initializedRendererCompleter!.future;
+  }
+
+  final Completer<AndroidMapRenderer?> completer =
+  Completer<AndroidMapRenderer?>();
+  _initializedRendererCompleter = completer;
+
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final GoogleMapsFlutterPlatform mapsImplementation =
+      GoogleMapsFlutterPlatform.instance;
+  if (mapsImplementation is GoogleMapsFlutterAndroid) {
+    unawaited(
+      mapsImplementation
+          .initializeWithRenderer(AndroidMapRenderer.latest)
+          .then(
+            (AndroidMapRenderer initializedRenderer) =>
+            completer.complete(initializedRenderer),
+      ),
+    );
+  } else {
+    completer.complete(null);
+  }
+
+  return completer.future;
 }

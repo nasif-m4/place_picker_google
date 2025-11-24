@@ -12,6 +12,7 @@ class SearchInputConfig {
   final FocusNode? focusNode;
   final TextInputType? keyboardType;
   final String? initialValue;
+  final String? w3wWords;
 
   const SearchInputConfig({
     this.style,
@@ -25,5 +26,6 @@ class SearchInputConfig {
     this.textAlign = TextAlign.start,
     this.autofocus = false,
     this.initialValue,
+    this.w3wWords
   });
 }

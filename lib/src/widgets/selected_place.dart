@@ -25,7 +25,16 @@ class SelectedPlace extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Theme.of(context).canvasColor,
+      decoration: BoxDecoration(
+        color: Theme.of(context).canvasColor,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black54,
+            blurRadius: 10,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
       padding: selectedPlaceConfig.contentPadding,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

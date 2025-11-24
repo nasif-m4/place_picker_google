@@ -12,7 +12,7 @@ class SelectedPlaceConfig {
 
   const SelectedPlaceConfig({
     this.actionButtonChild,
-    this.actionButtonText = 'Confirm Location',
+    this.actionButtonText = 'Select place',
     this.locationNameStyle,
     this.formattedAddressStyle,
     this.actionButtonStyle,
@@ -21,14 +21,13 @@ class SelectedPlaceConfig {
 
   const SelectedPlaceConfig.init({
     this.actionButtonChild,
-    this.actionButtonText = 'Confirm Location',
+    this.actionButtonText = 'Select place',
     this.locationNameStyle = const TextStyle(fontSize: 16),
     this.formattedAddressStyle = const TextStyle(
       color: Colors.grey,
       fontSize: 14,
     ),
     this.actionButtonStyle,
-    this.contentPadding =
-        const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+    this.contentPadding = const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
   });
 }

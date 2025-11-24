@@ -69,6 +69,8 @@ class LocationResult {
 
   AddressComponent? subLocalityLevel5;
 
+  String? w3wWords;
+
   List<AddressComponent>? political;
 
   LocationResult({
@@ -95,6 +97,7 @@ class LocationResult {
     this.subLocalityLevel3,
     this.subLocalityLevel4,
     this.subLocalityLevel5,
+    this.w3wWords,
     this.political,
   });
 

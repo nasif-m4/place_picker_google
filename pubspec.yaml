@@ -18,11 +18,12 @@ dependencies:
   google_maps_flutter: ^2.12.3
   geolocator: ^14.0.2
   geocoding: ^4.0.0
+  what3words: ^3.2.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true

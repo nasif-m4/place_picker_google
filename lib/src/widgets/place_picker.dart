@@ -419,7 +419,7 @@ class PlacePickerState extends State<PlacePicker>
   /// internal state to handle the searching state
   SearchingState _searchingState = SearchingState.idle;
 
-  late LatLngBounds _latLngBounds;
+  LatLngBounds? _latLngBounds = null;
 
   /// simple getter to check whether searchingState is searching
   bool get isSearching => _searchingState == SearchingState.searching;
@@ -463,9 +463,15 @@ class PlacePickerState extends State<PlacePicker>
   void _initializePositionAndMarkers() async {
     try {
       late final LatLng position;
-      if (widget.initialLocation != null) {
-        position = widget.initialLocation!;
-        if (w3wService != null) {
+      if (w3wService != null) {
+        if (widget.searchInputConfig.w3wWords != null) {
+          _canLoadMap = true;
+          await setW3WAddressByWords(widget.searchInputConfig.w3wWords!);
+          debugPrint('set State 10');
+          setState(() => {});
+          return;
+        } else if (widget.initialLocation != null) {
+          position = widget.initialLocation!;
           _setW3WAddressByCoordinates(position);
         }
       } else {
@@ -477,12 +483,7 @@ class PlacePickerState extends State<PlacePicker>
         _currentLocation = position;
 
         if (!widget.usePinPointingSearch) {
-          markers.add(
-            Marker(
-              position: position,
-              markerId: const MarkerId("selected-location"),
-            ),
-          );
+          setMarker(position);
         }
 
         _canLoadMap = true;
@@ -515,7 +516,6 @@ class PlacePickerState extends State<PlacePicker>
     if (!currentFocus.hasPrimaryFocus && currentFocus.focusedChild != null) {
       FocusManager.instance.primaryFocus?.unfocus();
     }
-    // _searchController.clear();
     _hideOverlay();
   }
 
@@ -755,7 +755,7 @@ class PlacePickerState extends State<PlacePicker>
     if (location != null) {
       await _setW3WWords(location.words);
       if (w3wService != null) {
-        if (_isLatLngInBounds(latLng, _latLngBounds)) {
+        if (_latLngBounds != null && _isLatLngInBounds(latLng, _latLngBounds!)) {
           debugPrint('Latitude: ${latLng.latitude}, Longitude: ${latLng.longitude} is within previous bound: $_latLngBounds. Grid not fetched');
         } else {
           await _fetchAndDrawGrid(latLng);
@@ -765,10 +765,16 @@ class PlacePickerState extends State<PlacePicker>
   }
 
   Future<void> setW3WAddressByWords(String words) async {
-    debugPrint('setW3WAddressByWords');
+    debugPrint('setW3WAddressByWords: ${words}');
     if (w3wService == null) {
       return;
     }
+    if (words.isEmpty) {
+      widget._log('What3 words empty');
+      return;
+    }
+
+    _clearOverlay();
 
     final w3w = words.replaceAll('///', '');
     final rs = await w3wService!.convertToCoordinates(w3w).execute();
@@ -780,11 +786,17 @@ class PlacePickerState extends State<PlacePicker>
 
       selectedNearbyPlace = null;
       await _setW3WWords(w3w);
-      final location = LatLng(coordinates.lat, coordinates.lng);
-      // setState(() {
-      //   _currentLocation = location;
-      // });
-      animateToLocation(location);
+      final latLng = LatLng(coordinates.lat, coordinates.lng);
+      if (_latLngBounds != null && _isLatLngInBounds(latLng, _latLngBounds!)) {
+        debugPrint('Latitude: ${latLng.latitude}, Longitude: ${latLng.longitude} is within previous bound: $_latLngBounds. Grid not fetched');
+      } else {
+        await _fetchAndDrawGrid(latLng);
+      }
+      widget._log('Setting current location');
+      _currentLocation = latLng;
+      animateToLocation(latLng);
+    } else {
+      widget._log('Failed to convert what3Words: ${w3w} to coordinates');
     }
   }
 
@@ -798,13 +810,6 @@ class PlacePickerState extends State<PlacePicker>
   /// On user taps map
   Future<void> onTap(LatLng position) async {
     debugPrint('onTap');
-    // Commented out to prevent multiple google map load
-    // if (!widget.usePinPointingSearch) {
-    //   setState(() {
-    //     debugPrint('set State 2');
-    //     _searchingState = SearchingState.searching;
-    //   });
-    // }
 
     _clearOverlay();
     if (w3wService != null) {
@@ -814,7 +819,6 @@ class PlacePickerState extends State<PlacePicker>
     // remove selected nearby place
     selectedNearbyPlace = null;
     animateToLocation(position);
-    // _searchController.clear(); // TODO
   }
 
   /// Debounce function for pin-pointing search
@@ -1930,8 +1934,8 @@ class PlacePickerState extends State<PlacePicker>
     _latLngBounds = _expandBoundsIfNeeded(center: latLng, diagonalMeters: widget.gridDiagonalLengthInMetre);
 
     final response = await w3wService?.gridSection(
-      Coordinates(_latLngBounds.southwest.latitude, _latLngBounds.southwest.longitude),
-      Coordinates(_latLngBounds.northeast.latitude, _latLngBounds.northeast.longitude)
+      Coordinates(_latLngBounds!.southwest.latitude, _latLngBounds!.southwest.longitude),
+      Coordinates(_latLngBounds!.northeast.latitude, _latLngBounds!.northeast.longitude)
     ).execute();
 
     if (response != null && response.isSuccessful()) {
